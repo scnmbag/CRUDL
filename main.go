@@ -11,7 +11,7 @@ import (
 	_ "github.com/jackc/pgx/stdlib"
 )
 
-type dbUserEntity struct {
+type User struct {
 	id          uuid.UUID
 	name        string
 	phoneNumber string
@@ -29,30 +29,30 @@ func main() {
 	defer db.Close()
 }
 
-func Create(data dbUserEntity, dataBase *sql.DB) error {
-	uuid := uuid.New()
+func Create(db *sql.DB, user User) (uuid.UUID, error) {
+	id := uuid.New()
 	currentTime := time.Now()
-	_, err := dataBase.Exec("INSERT INTO users(id, name, phone, email, created_at) VALUES ($1, $2, $3, $4, $5)", uuid, data.name, data.phoneNumber, data.email, currentTime)
+	_, err := db.Exec("INSERT INTO users(id, name, phone, email, created_at) VALUES ($1, $2, $3, $4, $5)", id, user.name, user.phoneNumber, user.email, currentTime)
 	if err != nil {
-		return err
+		return uuid.Nil, err
 	}
 	fmt.Println("Row has been created")
-	return nil
+	return id, nil
 }
 
-func GetById(id uuid.UUID, dataBase *sql.DB) error {
-	var user dbUserEntity
-	row := dataBase.QueryRow("SELECT * FROM users WHERE id = $1", id)
+func GetById(db *sql.DB, id uuid.UUID) (User, error) {
+	var user User
+	row := db.QueryRow("SELECT * FROM users WHERE id = $1", id)
 	err := row.Scan(&user.id, &user.name, &user.phoneNumber, &user.email, &user.createdDate)
 	if err != nil {
-		return err
+		return user, err
 	}
 	fmt.Printf("%-36s %-10s %-15s %-20s %s\n", "id", "name", "phone", "email", "created_at")
 	fmt.Printf("%-36s %-10s %-15s %-20s %v\n", user.id, user.name, user.phoneNumber, user.email, user.createdDate)
-	return nil
+	return user, nil
 }
 
-func UpdateById(id uuid.UUID, fields map[string]string, dataBase *sql.DB) error {
+func UpdateById(db *sql.DB, id uuid.UUID, fields map[string]string) error {
 	var (
 		updateString string
 		queryText    string
@@ -69,7 +69,7 @@ func UpdateById(id uuid.UUID, fields map[string]string, dataBase *sql.DB) error 
 		updateString += v + " = " + "'" + fields[v] + comma
 	}
 	queryText = "UPDATE users SET " + updateString + " WHERE id = $1"
-	_, err := dataBase.Exec(queryText, id)
+	_, err := db.Exec(queryText, id)
 	if err != nil {
 		return err
 	}
@@ -77,8 +77,8 @@ func UpdateById(id uuid.UUID, fields map[string]string, dataBase *sql.DB) error 
 	return nil
 }
 
-func DeleteById(id uuid.UUID, dataBase *sql.DB) error {
-	_, err := dataBase.Exec("DELETE FROM users WHERE id = $1", id)
+func DeleteById(db *sql.DB, id uuid.UUID) error {
+	_, err := db.Exec("DELETE FROM users WHERE id = $1", id)
 	if err != nil {
 		return err
 	}
@@ -86,28 +86,39 @@ func DeleteById(id uuid.UUID, dataBase *sql.DB) error {
 	return nil
 }
 
-func List(dataBase *sql.DB, limit ...any) error {
-	var limitString string
-	var user dbUserEntity
-	for _, v := range limit {
-		limitNumber, ok := v.(int)
-		if ok && limitNumber > 0 {
-			limitString = " LIMIT " + strconv.Itoa(limitNumber)
-		}
+func List(db *sql.DB, limit, offest uint64) ([]User, error) {
+	var (
+		user         User
+		limitString  string
+		offsetString string
+		users        []User
+	)
+	if limit != 0 {
+		limitString = " LIMIT " + strconv.Itoa(int(limit))
 	}
-	rows, err := dataBase.Query("SELECT * FROM users" + limitString)
+	if offest != 0 {
+		offsetString = " OFFSET " + strconv.Itoa(int(offest))
+	}
+	rows, err := db.Query("SELECT * FROM users" + limitString + offsetString)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
+	//----- для отладки, убрать в скором времени
 	rowsNames, err := rows.Columns()
 	if err != nil {
 		log.Print(err)
 	}
 	fmt.Printf("%-36s %-10s %-15s %-20s %s\n", rowsNames[0], rowsNames[1], rowsNames[2], rowsNames[3], rowsNames[4])
+	//-----
+	users = make([]User, 0, limit)
 	for rows.Next() {
-		rows.Scan(&user.id, &user.name, &user.phoneNumber, &user.email, &user.createdDate)
+		err = rows.Scan(&user.id, &user.name, &user.phoneNumber, &user.email, &user.createdDate)
+		if err != nil {
+			return []User{}, err
+		}
+		users = append(users, user)
 		fmt.Printf("%-36s %-10s %-15s %-20s %v\n", user.id, user.name, user.phoneNumber, user.email, user.createdDate)
 	}
-	return nil
+	return users, nil
 }
