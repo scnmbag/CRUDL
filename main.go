@@ -2,8 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -12,11 +14,11 @@ import (
 )
 
 type User struct {
-	id          uuid.UUID
-	name        string
-	phoneNumber string
-	email       string
-	createdDate time.Time
+	Id          uuid.UUID
+	Name        string
+	PhoneNumber string
+	Email       string
+	CreatedDate time.Time
 }
 
 var dataBaseURL string = "postgres://login:pass@localhost:5432/database-name"
@@ -32,7 +34,7 @@ func main() {
 func Create(db *sql.DB, user User) (uuid.UUID, error) {
 	id := uuid.New()
 	currentTime := time.Now()
-	_, err := db.Exec("INSERT INTO users(id, name, phone, email, created_at) VALUES ($1, $2, $3, $4, $5)", id, user.name, user.phoneNumber, user.email, currentTime)
+	_, err := db.Exec("INSERT INTO users(id, name, phone, email, created_at) VALUES ($1, $2, $3, $4, $5)", id, user.Name, user.PhoneNumber, user.Email, currentTime)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -43,33 +45,28 @@ func Create(db *sql.DB, user User) (uuid.UUID, error) {
 func GetById(db *sql.DB, id uuid.UUID) (User, error) {
 	var user User
 	row := db.QueryRow("SELECT * FROM users WHERE id = $1", id)
-	err := row.Scan(&user.id, &user.name, &user.phoneNumber, &user.email, &user.createdDate)
+	err := row.Scan(&user.Id, &user.Name, &user.PhoneNumber, &user.Email, &user.CreatedDate)
 	if err != nil {
 		return user, err
 	}
 	fmt.Printf("%-36s %-10s %-15s %-20s %s\n", "id", "name", "phone", "email", "created_at")
-	fmt.Printf("%-36s %-10s %-15s %-20s %v\n", user.id, user.name, user.phoneNumber, user.email, user.createdDate)
+	fmt.Printf("%-36s %-10s %-15s %-20s %v\n", user.Id, user.Name, user.PhoneNumber, user.Email, user.CreatedDate)
 	return user, nil
 }
 
-func UpdateById(db *sql.DB, id uuid.UUID, fields map[string]string) error {
-	var (
-		updateString string
-		queryText    string
-		fieldsNames  []string
-		comma        = "', "
-	)
-	for key := range fields {
-		fieldsNames = append(fieldsNames, key)
+func UpdateById(db *sql.DB, id uuid.UUID, fields map[string]interface{}, template User) error {
+	queryText := "UPDATE users SET"
+	fieldsList, err := fieldsFilter(fields, template)
+	if err != nil {
+		return err
 	}
-	for i, v := range fieldsNames {
-		if i == len(fields)-1 {
-			comma = "'"
-		}
-		updateString += v + " = " + "'" + fields[v] + comma
-	}
-	queryText = "UPDATE users SET " + updateString + " WHERE id = $1"
-	_, err := db.Exec(queryText, id)
+	queryText, queryFields := getQueryDataForUpdate(queryText, fieldsList)
+	//---debug
+	fmt.Println(queryText)
+	fmt.Println(queryFields)
+	//---
+	queryFields = append(queryFields, id)
+	_, err = db.Exec(queryText, queryFields...)
 	if err != nil {
 		return err
 	}
@@ -113,12 +110,48 @@ func List(db *sql.DB, limit, offest uint64) ([]User, error) {
 	//-----
 	users = make([]User, 0, limit)
 	for rows.Next() {
-		err = rows.Scan(&user.id, &user.name, &user.phoneNumber, &user.email, &user.createdDate)
+		err = rows.Scan(&user.Id, &user.Name, &user.PhoneNumber, &user.Email, &user.CreatedDate)
 		if err != nil {
 			return []User{}, err
 		}
 		users = append(users, user)
-		fmt.Printf("%-36s %-10s %-15s %-20s %v\n", user.id, user.name, user.phoneNumber, user.email, user.createdDate)
+		fmt.Printf("%-36s %-10s %-15s %-20s %v\n", user.Id, user.Name, user.PhoneNumber, user.Email, user.CreatedDate)
 	}
 	return users, nil
+}
+
+func fieldsFilter(fields map[string]interface{}, template User) (filteredFields map[string]interface{}, err error) {
+	v := reflect.ValueOf(template)
+	typeOfTemplate := v.Type()
+	if v.Kind() != reflect.Struct {
+		return nil, errors.New("Wrong template parameter. It must be struct or have underlying type as struct")
+	}
+	filteredFields = make(map[string]interface{})
+	for i := 0; i < v.NumField(); i++ {
+		templateFieldName := typeOfTemplate.Field(i).Name
+		templateFieldType := v.Field(i).Type()
+		if value, ok := fields[templateFieldName]; ok && value != nil && reflect.ValueOf(value).Type() == templateFieldType {
+			filteredFields[templateFieldName] = value
+		}
+	}
+	if len(filteredFields) == 0 {
+		return filteredFields, errors.New("Not enough fields to update.")
+	}
+	return
+}
+
+func getQueryDataForUpdate(queryText string, filteredFields map[string]interface{}) (outputQueryText string, fieldsValues []interface{}) {
+	fieldsValues = make([]interface{}, 0, len(filteredFields))
+	comma := ","
+	i := 0
+	for k, v := range filteredFields {
+		if i == len(filteredFields)-1 {
+			comma = " "
+		}
+		queryText += " " + k + " = " + "$" + strconv.Itoa(i+1) + comma
+		fieldsValues = append(fieldsValues, v)
+		i++
+	}
+	queryText += "WHERE id = " + "$" + strconv.Itoa(i+1)
+	return queryText, fieldsValues
 }
